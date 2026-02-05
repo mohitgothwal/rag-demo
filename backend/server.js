@@ -5,12 +5,13 @@ import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
 
-
 const app = express();
-app.use(cors({
-  origin: "http://localhost:3000"
-}));
-app.use(express.json());
+
+/* ✅ FIX 1: allow all origins (safe for demo APIs) */
+app.use(cors());
+app.use(express.json({ limit: "10mb" }));
+
+/* ---------------- EMBEDDINGS ---------------- */
 
 function fakeEmbedding(text) {
   const vec = new Array(128).fill(0);
@@ -20,25 +21,27 @@ function fakeEmbedding(text) {
   return vec;
 }
 
+/* ---------------- LLM CLIENT ---------------- */
 
 const openai = new OpenAI({
   apiKey: process.env.GROQ_API_KEY,
   baseURL: "https://api.groq.com/openai/v1"
 });
 
+/* ---------------- IN-MEMORY STORE ---------------- */
 
-// ---- In-memory store ----
 let chunks = [];
 let embeddings = [];
 
-// ---- Helpers ----
+/* ---------------- HELPERS ---------------- */
+
 function chunkText(text, size = 400, overlap = 50) {
   const words = text.split(" ");
-  const chunks = [];
+  const out = [];
   for (let i = 0; i < words.length; i += size - overlap) {
-    chunks.push(words.slice(i, i + size).join(" "));
+    out.push(words.slice(i, i + size).join(" "));
   }
-  return chunks;
+  return out;
 }
 
 function cosineSimilarity(a, b) {
@@ -48,65 +51,106 @@ function cosineSimilarity(a, b) {
   return dot / (magA * magB);
 }
 
-// ---- Upload Document ----
+/* ---------------- ROUTES ---------------- */
+
+/* ✅ FIX 2: /upload ALWAYS responds */
 app.post("/upload", async (req, res) => {
-  const { text } = req.body;
-  chunks = chunkText(text);
+  try {
+    console.log("📥 /upload called");
 
-  embeddings = [];
-  for (const chunk of chunks) {
-    embeddings.push(fakeEmbedding(chunk));
+    const { text } = req.body;
 
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: "No text provided" });
+    }
+
+    chunks = chunkText(text);
+    embeddings = chunks.map(fakeEmbedding);
+
+    console.log(`✅ Indexed ${chunks.length} chunks`);
+
+    return res.json({
+      success: true,
+      chunks: chunks.length
+    });
+  } catch (err) {
+    console.error("❌ Upload failed:", err);
+    return res.status(500).json({ error: "Indexing failed" });
   }
-
-  res.json({ message: "Document indexed", chunks: chunks.length });
 });
 
-// ---- Ask Question ----
+/* ---------------- ASK ---------------- */
+
 app.post("/ask", async (req, res) => {
-  const { question } = req.body;
+  try {
+    const { question } = req.body;
 
-  const qEmbedding = fakeEmbedding(question);
+    if (!question || !embeddings.length) {
+      return res.json({
+        answer: "Please upload a document first.",
+        sources: []
+      });
+    }
 
+    const qEmbedding = fakeEmbedding(question);
 
-  // Retrieve
-  const scored = embeddings.map((e, i) => ({
-    score: cosineSimilarity(qEmbedding, e)
-,
-    text: chunks[i],
-    id: i
-  }));
+    const scored = embeddings.map((e, i) => ({
+      score: cosineSimilarity(qEmbedding, e),
+      text: chunks[i]
+    }));
 
-  // Rerank (explicit step)
-  const top = scored
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
+    const top = scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
 
-  if (top[0].score < 0.2) {
+    if (top[0].score < 0.2) {
+      return res.json({
+        answer: "I couldn’t find enough information to answer this question.",
+        sources: []
+      });
+    }
+
+    const context = top
+      .map((c, i) => `[${i + 1}] ${c.text}`)
+      .join("\n");
+
+    const completion = await openai.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [
+        {
+          role: "system",
+          content:
+            "Answer only using the provided sources. Cite facts like [1][2]."
+        },
+        {
+          role: "user",
+          content: `Context:\n${context}\n\nQuestion: ${question}`
+        }
+      ]
+    });
+
     return res.json({
-      answer: "I couldn’t find enough information to answer this question.",
+      answer: completion.choices[0].message.content,
+      sources: top.map((c, i) => ({
+        id: i + 1,
+        text: c.text
+      }))
+    });
+  } catch (err) {
+    console.error("❌ Ask failed:", err);
+    return res.status(500).json({
+      answer: "An error occurred while answering.",
       sources: []
     });
   }
-
-  // LLM Answer
-  const context = top.map((c, i) => `[${i + 1}] ${c.text}`).join("\n");
-
-  const completion = await openai.chat.completions.create({
-    model: "llama-3.1-8b-instant",
-    messages: [
-      { role: "system", content: "Answer using only the sources. Cite like [1][2]." },
-      { role: "user", content: `Context:\n${context}\n\nQuestion: ${question}` }
-    ]
-  });
-
-  res.json({
-    answer: completion.choices[0].message.content,
-    sources: top.map((c, i) => ({
-      id: i + 1,
-      text: c.text
-    }))
-  });
 });
 
-app.listen(3001, () => console.log("Backend running on 3001"));
+/* ---------------- HEALTH ---------------- */
+
+app.get("/", (_, res) => {
+  res.send("RAG backend running");
+});
+
+app.listen(3001, () => {
+  console.log("Backend running on 3001");
+});
