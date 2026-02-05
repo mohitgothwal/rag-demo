@@ -8,8 +8,8 @@ The system follows the canonical RAG flow: **retrieve → rerank → generate**,
 
 ## Live Demo
 
-- **Frontend (Vercel):** https://<your-vercel-app>.vercel.app  
-- **Backend (Render):** https://<your-render-service>.onrender.com  
+- **Frontend (Vercel):** https://rag-demomhtgthwl.vercel.app/  
+- **Backend (Render):** https://rag-demo-c6cg.onrender.com 
 
 ---
 
