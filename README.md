@@ -239,6 +239,3 @@ Backend: Node.js, Express
 LLM: Groq (LLaMA 3.1 Instant)
 
 Retrieval: Custom in-memory vector store
-
-Resume
-📄 Resume: https://drive.google.com/file/d/1VyUck2ll7YCe81ZNnF00_GFUuJ8I13zz/view?usp=sharing
